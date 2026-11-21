@@ -1,0 +1,14 @@
+# Every pull request's author signs CONTRIBUTORS.md once (see that file). This repository holds the shared check.
+name: CLA
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  cla:
+    uses: ./.github/workflows/cla.yml
