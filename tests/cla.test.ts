@@ -1,5 +1,6 @@
 // Runs the CLA workflow's github-script body against a fake GitHub API, one case per outcome.
-const WF = process.argv[2] ?? "";
+// Run: bun tests/cla.test.ts
+const WF = process.argv[2] ?? new URL("../.github/workflows/cla.yml", import.meta.url).pathname;
 const doc = Bun.YAML.parse(await Bun.file(WF).text()) as {
 	jobs: { cla: { steps: { with: { script: string } }[] } };
 };
