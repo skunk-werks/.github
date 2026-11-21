@@ -1,0 +1,101 @@
+# Reusable CLA check for every Skunk Werks repository.
+#
+# A pull request passes when its author is an owner, or a bot, or has signed the repository's CONTRIBUTORS.md:
+# a line "- @<login>: ..." that is either already on the base branch, or added in this pull request by a commit
+# the author made. The check reads everything through the API and never checks out the pull request's code.
+name: CLA
+
+on:
+  workflow_call:
+    inputs:
+      owners:
+        description: GitHub logins that never sign, separated by spaces.
+        type: string
+        default: ziadsawalha icanhasjonas
+      license:
+        description: Path of the license file contributors agree to.
+        type: string
+        default: LICENSE
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the author has signed CONTRIBUTORS.md
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OWNERS: ${{ inputs.owners }}
+          LICENSE_PATH: ${{ inputs.license }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setFailed("The CLA check runs only on pull_request events.");
+              return;
+            }
+            const { owner, repo } = context.repo;
+            const login = pr.user.login;
+            const owners = (process.env.OWNERS ?? "").split(/\s+/).filter(Boolean);
+            const licensePath = process.env.LICENSE_PATH || "LICENSE";
+
+            if (owners.includes(login) || pr.user.type === "Bot") {
+              core.info(`@${login} does not need to sign.`);
+              return;
+            }
+
+            const read = async (path, ref) => {
+              try {
+                const r = await github.rest.repos.getContent({ owner, repo, path, ref });
+                return Buffer.from(r.data.content, "base64").toString("utf8");
+              } catch (e) {
+                if (e.status === 404) return null;
+                throw e;
+              }
+            };
+
+            if ((await read(licensePath, pr.base.sha)) === null) {
+              core.setFailed(`This repository has no ${licensePath}, so there is nothing to agree to. An owner must add one.`);
+              return;
+            }
+
+            // GitHub logins hold only letters, digits and hyphens, so the login needs no escaping here.
+            const signed = new RegExp(`^- @${login}:`, "im");
+            if (signed.test((await read("CONTRIBUTORS.md", pr.base.sha)) ?? "")) {
+              core.info(`@${login} signed CONTRIBUTORS.md earlier.`);
+              return;
+            }
+
+            const how =
+              `@${login} has not signed. Add one commit, authored by you, that adds this line under "Signed" in CONTRIBUTORS.md:\n` +
+              `- @${login}: I agree that my contributions to this repository are made under ${licensePath}.\n` +
+              `Use the commit message: chore(cla): agree to ${licensePath} as @${login}`;
+
+            if (!signed.test((await read("CONTRIBUTORS.md", pr.head.sha)) ?? "")) {
+              core.setFailed(how);
+              return;
+            }
+
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner,
+              repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            for (const c of commits) {
+              if (c.author?.login?.toLowerCase() !== login.toLowerCase()) continue;
+              const { data } = await github.rest.repos.getCommit({ owner, repo, ref: c.sha });
+              const added = (data.files ?? []).some(
+                (f) =>
+                  f.filename === "CONTRIBUTORS.md" &&
+                  (f.patch ?? "").split("\n").some((l) => signed.test(l.slice(1)) && l.startsWith("+")),
+              );
+              if (added) {
+                core.info(`@${login} signed CONTRIBUTORS.md in ${c.sha.slice(0, 7)}.`);
+                return;
+              }
+            }
+            core.setFailed(`The signing line is in CONTRIBUTORS.md, but no commit authored by @${login} adds it.\n${how}`);
